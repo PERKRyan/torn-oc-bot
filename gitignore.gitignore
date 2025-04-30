@@ -1,0 +1,5 @@
+# Ignore environment & auth files
+.env
+DiscordBotToken.env
+__pycache__/
+*.pyc
