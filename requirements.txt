@@ -3,6 +3,3 @@ gspread
 oauth2client
 requests
 python-dotenv
-discord
-asyncio
-json
