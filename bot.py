@@ -13,6 +13,22 @@ from cpr_sync import load_cpr_data
 from oc_assignment import suggest_oc
 from discord import app_commands
 from google.oauth2.service_account import Credentials
+from threading import Thread
+from flask import Flask
+
+# to fake trafic to keep bot running
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive."
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
 
 # Ensure consistent base directory
 BASE_DIR = Path(__file__).resolve().parent
@@ -302,4 +318,5 @@ async def monitor_ocs():
     except Exception as e:
         print(f"🔥 monitor_ocs error: {e}")
 
+keep_alive()
 bot.run(DISCORD_TOKEN)
