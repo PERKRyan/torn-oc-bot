@@ -1,24 +1,27 @@
+
 import discord
 import asyncio
 from discord.ext import tasks, commands
-from dotenv import load_dotenv
 import os
 import json
+import re
+import gspread
 from pathlib import Path
 from torn_api import get_faction_data
+from torn_api import get_faction_balances
 from cpr_sync import load_cpr_data
 from oc_assignment import suggest_oc
+from discord import app_commands
+from google.oauth2.service_account import Credentials
 
 # Ensure consistent base directory
 BASE_DIR = Path(__file__).resolve().parent
 
-# Load token from .env
-env_path = BASE_DIR / 'DiscordBotToken.env'
-load_dotenv(dotenv_path=env_path)
-DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+# Get token from Secrets
+DISCORD_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 
 if not DISCORD_TOKEN:
-    raise ValueError("DISCORD_BOT_TOKEN not found in .env!")
+    raise ValueError("DISCORD_BOT_TOKEN not found in Secrets!")
 
 # Load config.json once
 config_path = BASE_DIR / 'config.json'
@@ -38,6 +41,13 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 tree = bot.tree  # for slash commands
 
+@tree.error
+async def on_app_command_error(interaction, error):
+    if isinstance(error, discord.app_commands.errors.CommandOnCooldown):
+        await interaction.response.send_message("Slow down!", ephemeral=True)
+
+tree.global_command_check = discord.app_commands.checks.cooldown(1, 3.0)  # 1 use every 3s
+
 @bot.event
 async def on_ready():
     print(f'✅ Logged in as {bot.user} (ID: {bot.user.id})')
@@ -46,7 +56,6 @@ async def on_ready():
     monitor_ocs.start()
     heartbeat.start()
 
-    # NOTE: tree.fetch() does not exist; skip removal and just sync
     synced = await tree.sync()
     print(f"✅ Synced {len(synced)} global slash commands.")
 
@@ -73,6 +82,174 @@ async def slash_setchannel(interaction: discord.Interaction):
     DISCORD_CHANNEL_ID = channel_id
 
     await interaction.response.send_message(f"✅ This channel is now set for OC alerts: **{interaction.channel.name}**")
+
+async def member_autocomplete(interaction: discord.Interaction, current: str):
+    return [
+        app_commands.Choice(name=m.display_name, value=m.display_name)
+        for m in interaction.guild.members if current.lower() in m.display_name.lower()
+    ][:25]
+
+@tree.command(name="purge", description="Delete all messages sent by the bot in this channel.")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def purge(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    def is_bot_message(msg):
+        return msg.author == interaction.client.user
+
+    deleted = await interaction.channel.purge(limit=1000, check=is_bot_message)
+    await interaction.followup.send(f"🗑️ Deleted {len(deleted)} bot message(s).", ephemeral=True)
+
+@tree.command(name="balance", description="Check Torn balance for yourself or another member")
+@app_commands.describe(member="Optional: provide a name like 'shandurai [25719]'")
+@app_commands.autocomplete(member=member_autocomplete)
+async def balance(interaction, member: str = None):
+    try:
+        data = get_faction_balances()
+        balance_data = data.get('balance', {})
+        members_list = balance_data.get('members', [])
+        if not isinstance(members_list, list):
+            await interaction.response.send_message("Faction data format error or missing members list.", ephemeral=True)
+            return
+
+        # If no member input, use the caller's display name
+        name_to_check = interaction.user.display_name if member is None else member
+        match = re.search(r'\[(\d+)\]', name_to_check)
+        torn_id = int(match.group(1)) if match else None
+
+        if torn_id is None:
+            await interaction.response.send_message(f"Could not extract Torn ID from '{name_to_check}'. Make sure the name includes [ID].", ephemeral=True)
+            return
+
+        torn_member = next((m for m in members_list if m.get('id') == torn_id), None)
+
+        if torn_member:
+            money = torn_member.get('money', 0)
+            points = torn_member.get('points', 0)
+            await interaction.response.send_message(f" {torn_member['username']}\n💰 Cash: ${money:,}\n✨ Points: {points}")
+        else:
+            await interaction.response.send_message(f"No Torn account found for ID {torn_id}.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Error fetching balance: {str(e)}", ephemeral=True)
+
+class BalanceRequestView(discord.ui.View):
+    def __init__(self, requester, link):
+        super().__init__()
+        self.requester = requester
+        self.link = link
+
+    @discord.ui.button(label="✅ Complete", style=discord.ButtonStyle.success)
+    async def complete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content=f"✅ Completed by: {interaction.user.display_name}", view=None)
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="❌ Request canceled", view=None)
+
+async def member_autocomplete(interaction: discord.Interaction, current: str):
+    return [
+        app_commands.Choice(name=m.display_name, value=m.display_name)
+        for m in interaction.guild.members if current.lower() in m.display_name.lower()
+    ][:25]
+
+@tree.command(name="balance_request", description="Request balance transfer with a specified amount")
+@app_commands.describe(amount="The amount you want to request")
+async def balance_request(interaction: discord.Interaction, amount: int):
+    try:
+        data = get_faction_balances()
+        balance_data = data.get('balance', {})
+        members_list = balance_data.get('members', [])
+        if not isinstance(members_list, list):
+            await interaction.response.send_message("Faction data format error or missing members list.", ephemeral=True)
+            return
+
+        display_name = interaction.user.display_name
+        match = re.search(r'\[(\d+)\]', display_name)
+        torn_id = int(match.group(1)) if match else None
+
+        if torn_id is None:
+            await interaction.response.send_message(f"Could not extract Torn ID from '{display_name}'. Make sure the name includes [ID].", ephemeral=True)
+            return
+
+        torn_member = next((m for m in members_list if m.get('id') == torn_id), None)
+
+        if not torn_member:
+            await interaction.response.send_message(f"No Torn account found for ID {torn_id}.", ephemeral=True)
+            return
+
+        balance = torn_member.get('money', 0)
+
+        if amount > balance:
+            await interaction.response.send_message(f"💰 Current balance: ${balance:,}\n❌ Error: Asking for more than you have.", ephemeral=True)
+        else:
+            link = f"https://www.torn.com/factions.php?step=your/tab=controls&option=give-to-user&giveMoneyTo={torn_id}&money={amount}"
+            view = BalanceRequestView(interaction.user, link)
+            await interaction.response.send_message(f"💰 Request link: {link}", view=view)
+    except Exception as e:
+        await interaction.response.send_message(f"Error handling balance request: {str(e)}", ephemeral=True)
+
+
+class DelinquentView(discord.ui.View):
+    def __init__(self, sheet, row_idx, message):
+        super().__init__(timeout=None)
+        self.sheet = sheet
+        self.row_idx = row_idx
+        self.message = message
+
+    @discord.ui.button(label="✅ Complete", style=discord.ButtonStyle.success)
+    async def complete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.sheet.update(f'H{self.row_idx + 2}', 'Yes')  # +2 because header row + 1-based index
+        await interaction.response.edit_message(content=f"✅ Completed by: {interaction.user.display_name}", view=None)
+
+    @discord.ui.button(label="❌ Clear", style=discord.ButtonStyle.danger)
+    async def clear(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Optional: clear a value in the sheet if needed
+        self.sheet.update(f'AC{self.row_idx + 2}', '')  # Example: clear 'From' (AC)
+        self.sheet.update(f'AD{self.row_idx + 2}', '')  # Example: clear 'To' (AD)
+        await interaction.response.edit_message(content=f"❌ Value Cleared by: {interaction.user.display_name}", view=None)
+
+@tree.command(name="delinquents", description="Show delinquent transfers with buttons")
+async def delinquents(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+
+        creds = Credentials.from_service_account_file(
+            'google_creds.json',
+            scopes=['https://www.googleapis.com/auth/spreadsheets']
+        )
+        client = gspread.authorize(creds)
+        sheet = client.open_by_key('15Ef4fK0cZH9xeUIwb0SjCj_SYf-wqvrp09qC6IneX7E').worksheet('Delinquents')
+        rows = sheet.get_all_values()
+        headers = rows[0]
+        records = rows[1:]
+
+        for idx, row in enumerate(records):
+            if len(row) > 24 and not row[24]:  # Column Y blank (25th column)
+                from_value = row[28] if len(row) > 28 else ""
+                to_value = row[29] if len(row) > 29 else ""
+
+                # Parse 'From' info
+                from_match = re.search(r'From: (\d+)', from_value)
+                if from_match:
+                    from_id = from_match.group(1)
+                    amount = int(re.sub(r'[^\d]', '', from_value.split(' ')[0]))
+                    amount = -amount
+                    link = f"https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo={from_id}&money={abs(amount)}"
+                    await interaction.channel.send(f"💥 From ID link: {link}", view=DelinquentView(sheet, idx, from_value))
+
+                # Parse 'To' info
+                to_matches = re.findall(r'(\d+)', to_value)
+                if to_matches:
+                    to_amount = int(re.sub(r'[^\d]', '', to_value.split(' ')[0]))
+                    for to_id in to_matches:
+                        link = f"https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo={to_id}&money={to_amount}"
+                        await interaction.channel.send(f"💸 To ID link: {link}", view=DelinquentView(sheet, idx, to_value))
+
+        await interaction.followup.send("✅ Delinquents list posted.", ephemeral=True)
+
+    except Exception as e:
+        await interaction.followup.send(f"Error fetching delinquent data: {str(e)}", ephemeral=True)
+
 
 @tasks.loop(minutes=1)
 async def heartbeat():
