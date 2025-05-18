@@ -214,14 +214,14 @@ class DelinquentView(discord.ui.View):
 
     @discord.ui.button(label="✅ Complete", style=discord.ButtonStyle.success)
     async def complete(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.sheet.update(f'H{self.row_idx + 2}', 'Yes')  # +2 because header row + 1-based index
+        self.sheet.update(f'H{self.row_idx + 2}', [['Yes']])  # +2 because header row + 1-based index
         await interaction.response.edit_message(content=f"✅ Completed by: {interaction.user.display_name}", view=None)
 
     @discord.ui.button(label="❌ Clear", style=discord.ButtonStyle.danger)
     async def clear(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Optional: clear a value in the sheet if needed
-        self.sheet.update(f'AC{self.row_idx + 2}', '')  # Example: clear 'From' (AC)
-        self.sheet.update(f'AD{self.row_idx + 2}', '')  # Example: clear 'To' (AD)
+        self.sheet.update(f'AC{self.row_idx + 2}', [['']])  # Example: clear 'From' (AC)
+        self.sheet.update(f'AD{self.row_idx + 2}', [['']])  # Example: clear 'To' (AD)
         await interaction.response.edit_message(content=f"❌ Value Cleared by: {interaction.user.display_name}", view=None)
 
 @tree.command(name="delinquents", description="Show delinquent transfers with buttons")
