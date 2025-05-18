@@ -275,6 +275,9 @@ async def delinquents(interaction: discord.Interaction):
                         f"💸 To ID link: {link}",
                         view=DelinquentView(sheet, idx, f"To {to_id}")
                     )
+            except Exception as e:
+                print(f"Error parsing to: {e}")
+                continue
 
         await interaction.followup.send("✅ Delinquents list posted.", ephemeral=True)
 
