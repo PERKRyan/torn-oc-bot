@@ -240,26 +240,41 @@ async def delinquents(interaction: discord.Interaction):
         records = rows[1:]
 
         for idx, row in enumerate(records):
-            if len(row) > 24 and not row[24]:  # Column Y blank (25th column)
-                from_value = row[28] if len(row) > 28 else ""
-                to_value = row[29] if len(row) > 29 else ""
-
-                # Parse 'From' info
-                from_match = re.search(r'From: (\d+)', from_value)
-                if from_match:
-                    from_id = from_match.group(1)
-                    amount = int(re.sub(r'[^\d]', '', from_value.split(' ')[0]))
-                    amount = -amount
-                    link = f"https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo={from_id}&money={abs(amount)}"
-                    await interaction.channel.send(f"💥 From ID link: {link}", view=DelinquentView(sheet, idx, from_value))
-
-                # Parse 'To' info
-                to_matches = re.findall(r'(\d+)', to_value)
-                if to_matches:
-                    to_amount = int(re.sub(r'[^\d]', '', to_value.split(' ')[0]))
-                    for to_id in to_matches:
-                        link = f"https://www.torn.com/factions.php?step=your#/tab=controls&option=give-to-user&addMoneyTo={to_id}&money={to_amount}"
-                        await interaction.channel.send(f"💸 To ID link: {link}", view=DelinquentView(sheet, idx, to_value))
+            if len(row) < 32:
+                continue
+        
+            status = row[24].strip()
+            if status:
+                continue  # Already completed
+        
+            from_amount_raw = row[28]
+            from_id = row[29]
+            to_amount_raw = row[30]
+            to_ids_raw = row[31]
+        
+            if not from_amount_raw or not from_id:
+                continue
+        
+            try:
+                from_amount = -int(re.sub(r'[^\d]', '', from_amount_raw))
+                from_link = f"https://www.torn.com/factions.php?step=your/tab=controls&option=give-to-user&giveMoneyTo={from_id}&money={abs(from_amount)}"
+                await interaction.channel.send(
+                    f"💥 From ID link: {from_link}",
+                    view=DelinquentView(sheet, idx, f"From {from_id}")
+                )
+            except Exception as e:
+                print(f"Error parsing from: {e}")
+                continue
+        
+            try:
+                to_amount = int(re.sub(r'[^\d]', '', to_amount_raw))
+                to_ids = to_ids_raw.split()
+                for to_id in to_ids:
+                    link = f"https://www.torn.com/factions.php?step=your/tab=controls&option=give-to-user&giveMoneyTo={to_id}&money={to_amount}"
+                    await interaction.channel.send(
+                        f"💸 To ID link: {link}",
+                        view=DelinquentView(sheet, idx, f"To {to_id}")
+                    )
 
         await interaction.followup.send("✅ Delinquents list posted.", ephemeral=True)
 
