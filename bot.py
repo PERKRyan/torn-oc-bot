@@ -279,7 +279,10 @@ async def delinquents(interaction: discord.Interaction):
                 print(f"Error parsing to: {e}")
                 continue
 
-        await interaction.followup.send("✅ Delinquents list posted.", ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.send_message("✅ Delinquents list posted.", ephemeral=True)
+        else:
+            await interaction.followup.send("✅ Delinquents list posted.", ephemeral=True)
 
     except Exception as e:
         await interaction.followup.send(f"Error fetching delinquent data: {str(e)}", ephemeral=True)
