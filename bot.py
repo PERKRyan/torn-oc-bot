@@ -288,6 +288,76 @@ async def delinquents(interaction: discord.Interaction):
         await interaction.followup.send(f"Error fetching delinquent data: {str(e)}", ephemeral=True)
 
 
+@tree.command(name="oc_check", description="Build and print OC role and member CPR dictionaries")
+async def oc_check(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+
+        creds = Credentials.from_service_account_file(
+            'google_creds.json',
+            scopes=['https://www.googleapis.com/auth/spreadsheets']
+        )
+        client = gspread.authorize(creds)
+
+        # 📘 Load Member_CPR Sheet
+        cpr_sheet = client.open_by_key('15Ef4fK0cZH9xeUIwb0SjCj_SYf-wqvrp09qC6IneX7E').worksheet('Member_CPR')
+        cpr_data = cpr_sheet.get_all_values()
+        headers = cpr_data[0]
+        levels = cpr_data[1]
+        roles = cpr_data[2]
+
+        member_cpr_dict = {}
+
+        for row in cpr_data[3:]:
+            name = row[0]
+            player_id = row[1]
+            if not player_id:
+                continue
+            member_cpr_dict[player_id] = {"Name": name}
+            for idx in range(3, len(row)):
+                oc_name = headers[idx]
+                if not oc_name:
+                    continue
+                member_cpr_dict[player_id][oc_name] = {
+                    "level": levels[idx],
+                    "Role": roles[idx],
+                    "CPR": row[idx]
+                }
+
+        # 📗 Load Crime&Position Sheet
+        crime_sheet = client.open_by_key('15Ef4fK0cZH9xeUIwb0SjCj_SYf-wqvrp09qC6IneX7E').worksheet('Crime&Position')
+        crime_data = crime_sheet.get_all_values()
+
+        oc_crime_dict = {}
+
+        for row in crime_data:
+            if len(row) < 19:
+                continue
+            oc_name = row[12]  # Column M
+            if not oc_name:
+                continue
+            level = row[13]     # Column N
+            role = row[14]      # Column O
+            influence = row[17] # Column R
+            cpr_required = row[18] # Column S
+
+            if oc_name not in oc_crime_dict:
+                oc_crime_dict[oc_name] = {}
+
+            oc_crime_dict[oc_name][role] = {
+                "level": level,
+                "influence": influence,
+                "CPR required": cpr_required
+            }
+
+        # 📤 Send Results (trimmed to Discord's 2000 char limit)
+        await interaction.followup.send(f"**Member CPR:**\n```json\n{str(member_cpr_dict)[:1900]}```", ephemeral=True)
+        await interaction.followup.send(f"**OC Crime Roles:**\n```json\n{str(oc_crime_dict)[:1900]}```", ephemeral=True)
+
+    except Exception as e:
+        await interaction.followup.send(f"Error processing OC data: {str(e)}", ephemeral=True)
+
+
 @tasks.loop(minutes=1)
 async def heartbeat():
     print("💓 Bot is alive...")
