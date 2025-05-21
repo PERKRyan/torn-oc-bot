@@ -24,6 +24,10 @@ def get_faction_data():
     url = f"https://api.torn.com/v2/faction/?selections=basic,crimes,members&key={API_KEY}"
     return safe_get(url)
 
+def get_crimes_data():
+    url =f"https://api.torn.com/v2/faction/?selections=crimes,members&cat=available&key={API_KEY}"
+    return safe_get(url)
+
 def get_member_status(user_id):
     url = f"https://api.torn.com/v2/user/{user_id}?selections=profile,crimes&key={API_KEY}"
     return safe_get(url)
