@@ -9,6 +9,7 @@ import gspread
 from pathlib import Path
 from torn_api import get_faction_data
 from torn_api import get_faction_balances
+from torn_api import get_crimes_data
 from cpr_sync import load_cpr_data
 from oc_assignment import suggest_oc
 from discord import app_commands
