@@ -288,24 +288,20 @@ async def delinquents(interaction: discord.Interaction):
         await interaction.followup.send(f"Error fetching delinquent data: {str(e)}", ephemeral=True)
 
 
-@tree.command(name="oc_check", description="Build and print OC role and member CPR dictionaries")
-async def oc_check(interaction: discord.Interaction):
+@tree.command(name="oc_assignments", description="Assign available members to OC roles based on CPR and availability")
+async def oc_assignments(interaction: discord.Interaction):
     try:
         await interaction.response.defer(ephemeral=True)
 
-        creds = Credentials.from_service_account_file(
-            'google_creds.json',
-            scopes=['https://www.googleapis.com/auth/spreadsheets']
-        )
+        creds = Credentials.from_service_account_file('google_creds.json', scopes=['https://www.googleapis.com/auth/spreadsheets'])
         client = gspread.authorize(creds)
 
-        # 📘 Load Member_CPR Sheet
+        # Load Member CPR sheet
         cpr_sheet = client.open_by_key('15Ef4fK0cZH9xeUIwb0SjCj_SYf-wqvrp09qC6IneX7E').worksheet('Member_CPR')
         cpr_data = cpr_sheet.get_all_values()
         headers = cpr_data[0]
         levels = cpr_data[1]
         roles = cpr_data[2]
-
         member_cpr_dict = {}
 
         for row in cpr_data[3:]:
@@ -319,43 +315,127 @@ async def oc_check(interaction: discord.Interaction):
                 if not oc_name:
                     continue
                 member_cpr_dict[player_id][oc_name] = {
-                    "level": levels[idx],
+                    "level": int(levels[idx]) if levels[idx].isdigit() else 0,
                     "Role": roles[idx],
-                    "CPR": row[idx]
+                    "CPR": int(row[idx]) if row[idx].isdigit() else 0
                 }
 
-        # 📗 Load Crime&Position Sheet
+        # Load Crime & Position sheet
         crime_sheet = client.open_by_key('15Ef4fK0cZH9xeUIwb0SjCj_SYf-wqvrp09qC6IneX7E').worksheet('Crime&Position')
         crime_data = crime_sheet.get_all_values()
-
         oc_crime_dict = {}
 
         for row in crime_data:
             if len(row) < 19:
                 continue
-            oc_name = row[12]  # Column M
+            oc_name = row[12]
             if not oc_name:
                 continue
-            level = row[13]     # Column N
-            role = row[14]      # Column O
-            influence = row[17] # Column R
-            cpr_required = row[18] # Column S
-
+            level = row[13]
+            role = row[14]
+            influence = row[17]
+            cpr_required = row[18]
             if oc_name not in oc_crime_dict:
                 oc_crime_dict[oc_name] = {}
-
             oc_crime_dict[oc_name][role] = {
-                "level": level,
+                "level": int(level) if level.isdigit() else 0,
                 "influence": influence,
-                "CPR required": cpr_required
+                "CPR required": int(cpr_required) if cpr_required.isdigit() else 0
             }
 
-        # 📤 Send Results (trimmed to Discord's 2000 char limit)
-        await interaction.followup.send(f"**Member CPR:**\n```json\n{str(member_cpr_dict)[:1900]}```", ephemeral=True)
-        await interaction.followup.send(f"**OC Crime Roles:**\n```json\n{str(oc_crime_dict)[:1900]}```", ephemeral=True)
+        # Fetch Torn crimes + members
+        crimes_data = get_crimes_data()
+        crimes = crimes_data.get("crimes", [])
+        members = crimes_data.get("members", [])
+
+        now = int(datetime.utcnow().timestamp())
+
+        # Step 1–3: Filter available members
+        available_members = []
+        for m in members:
+            last_action = m.get("last_action", {}).get("timestamp", 0)
+            time_since = now - int(last_action)
+            if time_since > 86400:
+                continue
+            if not m["is_in_oc"]:
+                available_members.append(m)
+                continue
+            for c in crimes:
+                for slot in c.get("slots", []):
+                    user = slot.get("user")
+                    if user and user.get("id") == m["id"]:
+                        if int(c.get("ready_at", 0)) - now <= 7200:
+                            available_members.append(m)
+                        break
+
+        # Step 4: Identify unfilled roles
+        roles_needed = []
+        for c in crimes:
+            for slot in c.get("slots", []):
+                if slot.get("user") is None:
+                    roles_needed.append({
+                        "crime": c["name"],
+                        "level": next((v["level"] for v in oc_crime_dict.get(c["name"], {}).values()), 0),
+                        "position": slot["position"],
+                        "required_cpr": slot.get("checkpoint_pass_rate", 0)
+                    })
+
+        assignments = []
+        top_role_tracker = {}
+
+        # Collect top 3 CPR roles per level
+        for oc_name, roles in oc_crime_dict.items():
+            sorted_roles = sorted(roles.items(), key=lambda r: -r[1].get("CPR required", 0))[:3]
+            for role_name, role_info in sorted_roles:
+                lvl = role_info["level"]
+                top_role_tracker.setdefault(lvl, []).append({
+                    "oc_name": oc_name,
+                    "role": role_name,
+                    "required_cpr": role_info["CPR required"]
+                })
+
+        # Check if members can fill top 3 CPR roles
+        level_fill_counts = {}
+        for lvl, top_roles in top_role_tracker.items():
+            for m in available_members:
+                m_id = str(m["id"])
+                m_data = member_cpr_dict.get(m_id)
+                if not m_data:
+                    continue
+                for role in top_roles:
+                    oc_data = m_data.get(role["oc_name"])
+                    if oc_data and oc_data["Role"].lower() == role["role"].lower():
+                        if int(oc_data["CPR"]) >= role["required_cpr"]:
+                            level_fill_counts.setdefault(lvl, 0)
+                            level_fill_counts[lvl] += 1
+                            break
+
+        # Step 5: Assign to current OC crimes
+        for role in sorted(roles_needed, key=lambda x: (-x["required_cpr"], -x["level"])):
+            for m in available_members:
+                m_id = str(m["id"])
+                m_data = member_cpr_dict.get(m_id)
+                if not m_data:
+                    continue
+                role_data = m_data.get(role["crime"])
+                if role_data and role_data["Role"].lower() == role["position"].lower():
+                    if int(role_data["CPR"]) >= role["required_cpr"]:
+                        assignments.append(f"{m_data['Name']} → {role['crime']} - {role['position']} (CPR: {role_data['CPR']})")
+                        available_members.remove(m)
+                        break
+
+        # Step 6: Suggest more crimes of specific level if top-3 roles can be filled
+        suggestion = ""
+        for lvl, count in level_fill_counts.items():
+            if count >= 1:
+                suggestion += f"⚠️ Consider creating more level {lvl} crimes.\n"
+
+        result = suggestion + "\n\n**Assignments:**\n" + "\n".join(assignments) if assignments else "No matching assignments found."
+        await interaction.followup.send(result[:1900], ephemeral=True)
 
     except Exception as e:
-        await interaction.followup.send(f"Error processing OC data: {str(e)}", ephemeral=True)
+        await interaction.followup.send(f"Error assigning OC roles: {str(e)}", ephemeral=True)
+
 
 
 @tasks.loop(minutes=1)
