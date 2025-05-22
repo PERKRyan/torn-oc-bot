@@ -295,8 +295,7 @@ async def delinquents(interaction: discord.Interaction):
 async def oc_assignments(interaction: discord.Interaction):
     try:
         await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send("🛠️ Processing OC assignments...", ephemeral=True)
-        
+
         creds = Credentials.from_service_account_file('google_creds.json', scopes=['https://www.googleapis.com/auth/spreadsheets'])
         client = gspread.authorize(creds)
 
@@ -324,7 +323,7 @@ async def oc_assignments(interaction: discord.Interaction):
                     "CPR": int(row[idx]) if row[idx].isdigit() else 0
                 }
 
-        # Load Crime & Position sheet
+        # Load OC structure from Crime&Position sheet
         crime_sheet = client.open_by_key('15Ef4fK0cZH9xeUIwb0SjCj_SYf-wqvrp09qC6IneX7E').worksheet('Crime&Position')
         crime_data = crime_sheet.get_all_values()
         oc_crime_dict = {}
@@ -347,7 +346,7 @@ async def oc_assignments(interaction: discord.Interaction):
                 "CPR required": int(cpr_required) if cpr_required.isdigit() else 0
             }
 
-        # Fetch Torn crimes + members
+        # Fetch Torn OC crimes and members
         crimes_data = get_crimes_data()
         crimes = crimes_data.get("crimes", [])
         members = crimes_data.get("members", [])
@@ -372,7 +371,7 @@ async def oc_assignments(interaction: discord.Interaction):
                             available_members.append(m)
                         break
 
-        # Step 4: Identify unfilled roles
+        # Step 4: Identify roles needing fill
         roles_needed = []
         for c in crimes:
             for slot in c.get("slots", []):
@@ -384,10 +383,11 @@ async def oc_assignments(interaction: discord.Interaction):
                         "required_cpr": slot.get("checkpoint_pass_rate", 0)
                     })
 
+        # Step 5: Assign members
         assignments = []
         top_role_tracker = {}
 
-        # Collect top 3 CPR roles per level
+        # Collect top 3 CPR roles per OC level
         for oc_name, roles in oc_crime_dict.items():
             sorted_roles = sorted(roles.items(), key=lambda r: -r[1].get("CPR required", 0))[:3]
             for role_name, role_info in sorted_roles:
@@ -398,7 +398,7 @@ async def oc_assignments(interaction: discord.Interaction):
                     "required_cpr": role_info["CPR required"]
                 })
 
-        # Check if members can fill top 3 CPR roles
+        # Step 6: Count eligible members for top roles
         level_fill_counts = {}
         for lvl, top_roles in top_role_tracker.items():
             for m in available_members:
@@ -414,7 +414,7 @@ async def oc_assignments(interaction: discord.Interaction):
                             level_fill_counts[lvl] += 1
                             break
 
-        # Step 5: Assign to current OC crimes
+        # Assign members to open roles
         for role in sorted(roles_needed, key=lambda x: (-x["required_cpr"], -x["level"])):
             for m in available_members:
                 m_id = str(m["id"])
@@ -428,7 +428,7 @@ async def oc_assignments(interaction: discord.Interaction):
                         available_members.remove(m)
                         break
 
-        # Step 6: Suggest more crimes of specific level if top-3 roles can be filled
+        # Step 7: Suggest more crimes if needed
         suggestion = ""
         for lvl, count in level_fill_counts.items():
             if count >= 1:
@@ -438,7 +438,10 @@ async def oc_assignments(interaction: discord.Interaction):
         await interaction.followup.send(result[:1900], ephemeral=True)
 
     except Exception as e:
-        await interaction.followup.send(f"Error assigning OC roles: {str(e)}", ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.send_message(f"Error assigning OC roles: {str(e)}", ephemeral=True)
+        else:
+            await interaction.followup.send(f"Error assigning OC roles: {str(e)}", ephemeral=True)
 
 
 
