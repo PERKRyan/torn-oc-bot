@@ -16,6 +16,8 @@ from discord import app_commands
 from google.oauth2.service_account import Credentials
 from threading import Thread
 from flask import Flask
+from datetime import datetime
+
 
 # to fake trafic to keep bot running
 app = Flask('')
