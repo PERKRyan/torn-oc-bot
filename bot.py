@@ -295,7 +295,8 @@ async def delinquents(interaction: discord.Interaction):
 async def oc_assignments(interaction: discord.Interaction):
     try:
         await interaction.response.defer(ephemeral=True)
-
+        await interaction.followup.send("🛠️ Processing OC assignments...", ephemeral=True)
+        
         creds = Credentials.from_service_account_file('google_creds.json', scopes=['https://www.googleapis.com/auth/spreadsheets'])
         client = gspread.authorize(creds)
 
